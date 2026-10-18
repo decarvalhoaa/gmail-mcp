@@ -716,7 +716,12 @@ export const toolDefinitions: ToolDefinition[] = [
     ].join("\n"),
     schema: DownloadAttachmentSchema,
     scopes: ["gmail.readonly", "gmail.modify"],
-    annotations: { title: "Download Attachment", readOnlyHint: true, openWorldHint: true },
+    annotations: {
+      title: "Download Attachment",
+      readOnlyHint: false,
+      destructiveHint: false,
+      openWorldHint: true,
+    },
   },
   {
     name: "download_all_attachments",
@@ -729,7 +734,12 @@ export const toolDefinitions: ToolDefinition[] = [
     ].join("\n"),
     schema: DownloadAllAttachmentsSchema,
     scopes: ["gmail.readonly", "gmail.modify"],
-    annotations: { title: "Download All Attachments", readOnlyHint: true, openWorldHint: true },
+    annotations: {
+      title: "Download All Attachments",
+      readOnlyHint: false,
+      destructiveHint: false,
+      openWorldHint: true,
+    },
   },
 
   // Thread-level operations
@@ -795,7 +805,7 @@ export const toolDefinitions: ToolDefinition[] = [
   {
     name: "download_email",
     description: [
-      "Save one Gmail message to a file (json, eml, txt, or html).",
+      "Save one Gmail message to a file (json, eml, txt, or html). The html file gets a Content-Security-Policy that blocks scripts, plugins and form submission when it is opened later; use eml for a byte-faithful copy.",
       "",
       "USE WHEN: persisting a message to disk for archival, evidence, or downstream processing. Returns metadata + the path written — bodies are NOT loaded into the LLM context, so this is the right choice for large messages.",
       "",
@@ -803,7 +813,12 @@ export const toolDefinitions: ToolDefinition[] = [
     ].join("\n"),
     schema: DownloadEmailSchema,
     scopes: ["gmail.readonly", "gmail.modify"],
-    annotations: { title: "Download Email", readOnlyHint: true, openWorldHint: true },
+    annotations: {
+      title: "Download Email",
+      readOnlyHint: false,
+      destructiveHint: false,
+      openWorldHint: true,
+    },
   },
 
   // Email write operations
@@ -1248,7 +1263,7 @@ export const toolDefinitions: ToolDefinition[] = [
   {
     name: "reply_to_email",
     description: [
-      "Reply to a thread, addressing the original sender ONLY (no Cc, no broadcast). The MCP fetches the source message, picks the original `From:` as the sole recipient, preserves `Subject:` (with `Re:` prefix added if absent), and sets `In-Reply-To` / `References` headers automatically. **The reply is sent immediately.**",
+      "Reply to a thread, addressing the original sender ONLY (no Cc, no broadcast). The MCP fetches the source message, picks the original `Reply-To:` mailbox when the message sets one, otherwise its `From:` (RFC 5322 §3.6.2; `Sender:` is never used), as the sole recipient, preserves `Subject:` (with `Re:` prefix added if absent), and sets `In-Reply-To` / `References` headers automatically. **The reply is sent immediately.**",
       "",
       "USE WHEN: replying privately to the person who sent the message — the safe default for a sender-only follow-up where `reply_all` would over-broadcast to everyone on the original `To:`/`Cc:` list.",
       "",

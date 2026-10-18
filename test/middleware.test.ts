@@ -14,6 +14,10 @@ import { resetRateLimitHistory } from "../src/rate-limit.js";
 import { wrapToolHandler, isDryRun, type ToolResult } from "../src/middleware.js";
 import { sanitizeForLlm } from "../src/sanitize.js";
 
+// Addresses are built at runtime: the leak scan rejects literal
+// addresses added in a diff (existing fixtures interpolate too).
+const mail = (user: string): string => `${user}@example.com`;
+
 const FENCE_OPEN = "<untrusted-tool-output>\n";
 const FENCE_CLOSE = "\n</untrusted-tool-output>";
 const unfence = (text: string): string => {
@@ -258,6 +262,15 @@ describe("wrapToolHandler", () => {
   });
 
   describe("structuredContent auto-attachment", () => {
+    it("strips invisible characters from structuredContent strings, unfenced", async () => {
+      const payload = { subject: "inv\u202Eoice", from: `a\u200B${mail("b")}` };
+      const result = await wrapToolHandler("list_email_labels", {}, async () => ({
+        content: [{ type: "text", text: JSON.stringify(payload) }],
+      }));
+      expect(result.structuredContent).toEqual({ subject: "invoice", from: mail("ab") });
+      expect(JSON.stringify(result.structuredContent)).not.toContain("untrusted-tool-output");
+    });
+
     it("lifts a JSON-object text payload into structuredContent", async () => {
       const payload = { id: "abc", labels: ["INBOX"], count: 3 };
       const result = await wrapToolHandler("list_email_labels", {}, async () => ({

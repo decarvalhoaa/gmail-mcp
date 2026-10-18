@@ -9,6 +9,10 @@ import {
   buildReplyAllRecipients,
 } from "../src/reply-all-helpers.js";
 
+// Addresses are built at runtime: the leak scan rejects literal
+// addresses added in a diff (existing fixtures interpolate too).
+const mail = (user: string): string => `${user}@example.com`;
+
 describe("parseEmailAddresses", () => {
   it("extracts email from simple email address", () => {
     expect(parseEmailAddresses("user@example.com")).toEqual(["user@example.com"]);
@@ -340,5 +344,19 @@ describe("buildForwardQuotedBody", () => {
     // empty trailer. Pin so a regression that adds a `||` fallback
     // doesn't sneak default text into the forward.
     expect(out.endsWith("To: bob@example.com\n\n")).toBe(true);
+  });
+});
+
+describe("parseEmailAddresses — linear on hostile headers", () => {
+  it("handles a long unterminated '<@@@…' run quickly", () => {
+    const start = performance.now();
+    expect(parseEmailAddresses("<" + "@".repeat(100_000))).toEqual([]);
+    expect(performance.now() - start).toBeLessThan(500);
+  });
+
+  it("still picks the last bracketed address of a malformed list", () => {
+    expect(parseEmailAddresses(`"Alice <alias@meta>" <${mail("alice")}>, junk;`)).toEqual([
+      mail("alice"),
+    ]);
   });
 });

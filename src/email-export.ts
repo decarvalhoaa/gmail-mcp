@@ -152,11 +152,47 @@ export function emailToTxt(
 }
 
 /**
- * Extract HTML content from email, or throw if none exists
+ * Content-Security-Policy stamped into every exported HTML file. The HTML
+ * is the sender's, and the saved file is opened later in a browser from
+ * `file://`: scripts, plugins, frames (a framed page runs its own
+ * scripts), `<base>` rewrites and form submissions are blocked, none of
+ * which Gmail renders either. Styles and images are left
+ * alone so the copy still renders like the original (blocking remote
+ * images would also stop tracking pixels, but changes the rendering).
+ */
+export const EXPORTED_HTML_CSP =
+  "script-src 'none'; object-src 'none'; frame-src 'none'; base-uri 'none'; form-action 'none'";
+
+const CSP_META = `<meta http-equiv="Content-Security-Policy" content="${EXPORTED_HTML_CSP}">`;
+// Anchored at the very start (`^\s*`, `[^>]*`): linear, and it cannot be
+// fooled by a doctype-looking string inside a comment further down.
+const LEADING_DOCTYPE_RE = /^\s*(<!doctype[^>]*>)/i;
+
+/**
+ * Wrap the sender's HTML in a document whose `<head>` starts with the CSP
+ * `<meta>` (a CSP meta is only enforced from inside the head). Searching
+ * the sender's markup for its own `<head>` is unreliable: a `<head>` inside
+ * a comment, a script string or an attribute would receive the tag and the
+ * browser would ignore it. The HTML parser merges the sender's own
+ * `<html>` / `<head>` / `<body>` tags into this document, so the copy
+ * renders as before. A leading doctype is kept first, so the rendering
+ * mode (standards or quirks) does not change; the UTF-8 charset matches the
+ * encoding the file is written in.
+ */
+function withExportCsp(html: string): string {
+  const doctype = LEADING_DOCTYPE_RE.exec(html);
+  const rest = doctype ? html.slice(doctype[0].length) : html;
+  return `${doctype?.[1] ?? ""}<html><head><meta charset="utf-8">${CSP_META}</head><body>${rest}</body></html>`;
+}
+
+/**
+ * Extract HTML content from email, or throw if none exists. The result
+ * carries a restrictive CSP (see `EXPORTED_HTML_CSP`); use the `eml`
+ * format for a byte-faithful copy.
  */
 export function emailToHtml(emailContent: { text: string; html: string }): string {
   if (!emailContent.html) {
     throw new Error("This email has no HTML content");
   }
-  return emailContent.html;
+  return withExportCsp(emailContent.html);
 }

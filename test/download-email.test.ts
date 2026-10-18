@@ -15,6 +15,7 @@ import {
   gmailMessageToJson,
   emailToTxt,
   emailToHtml,
+  EXPORTED_HTML_CSP,
   parseEmailAddress,
   parseEmailAddresses,
 } from "../src/email-export.js";
@@ -135,14 +136,63 @@ describe("download_email formats", () => {
   describe("HTML format", () => {
     it("returns raw HTML content", () => {
       const html = emailToHtml(mockContent);
-      expect(html).toBe(mockContent.html);
       expect(html).toContain("<b>HTML</b>");
+      expect(html).toContain(`content="${EXPORTED_HTML_CSP}"`);
     });
 
     it("throws when no HTML content available", () => {
       expect(() => emailToHtml({ text: "plain only", html: "" })).toThrow(
         "This email has no HTML content",
       );
+    });
+
+    const CSP_TAG = 'http-equiv="Content-Security-Policy"';
+
+    it("puts the CSP first in the real <head>, before any sender markup", () => {
+      const out = emailToHtml({
+        text: "",
+        html: "<html><head><title>t</title><script>x()</script></head><body><header>h</header></body></html>",
+      });
+      expect(out.startsWith(`<html><head><meta charset="utf-8"><meta ${CSP_TAG}`)).toBe(true);
+      expect(out.indexOf(CSP_TAG)).toBeLessThan(out.indexOf("<script>"));
+      expect(out).toContain("<header>h</header>");
+      expect(out.match(/Content-Security-Policy/g)).toHaveLength(1);
+    });
+
+    it("is not fooled by a <head> hidden in a comment", () => {
+      const out = emailToHtml({
+        text: "",
+        html: "<!-- <head> --><html><head><script>x()</script></head><body>b</body></html>",
+      });
+      // The CSP precedes the comment, so it sits in the head the browser builds.
+      expect(out.indexOf(CSP_TAG)).toBeLessThan(out.indexOf("<!--"));
+    });
+
+    it("keeps a leading doctype first so the rendering mode does not change", () => {
+      const out = emailToHtml({ text: "", html: "<!DOCTYPE html>\n<html><body>x</body></html>" });
+      expect(out.startsWith("<!DOCTYPE html><html><head>")).toBe(true);
+      expect(out.match(/<!DOCTYPE/gi)).toHaveLength(1);
+    });
+
+    it("wraps a bare fragment without adding a doctype (quirks mode kept)", () => {
+      const out = emailToHtml({ text: "", html: "<p>Bonjour</p>" });
+      expect(out.startsWith("<html><head>")).toBe(true);
+      expect(out).toContain(`content="${EXPORTED_HTML_CSP}"`);
+      expect(out).toContain("<body><p>Bonjour</p></body>");
+    });
+
+    it("blocks frames, whose document would run its own scripts", () => {
+      expect(EXPORTED_HTML_CSP).toContain("frame-src 'none'");
+      const out = emailToHtml({
+        text: "",
+        html: '<p>x</p><iframe src="frame.html"></iframe>',
+      });
+      expect(out.indexOf(`content="${EXPORTED_HTML_CSP}"`)).toBeLessThan(out.indexOf("<iframe"));
+    });
+
+    it("keeps styles and images allowed so the copy renders like the original", () => {
+      expect(EXPORTED_HTML_CSP).not.toMatch(/default-src|img-src|style-src/);
+      expect(EXPORTED_HTML_CSP).toContain("script-src 'none'");
     });
   });
 });
