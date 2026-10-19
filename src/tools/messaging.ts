@@ -26,7 +26,14 @@ import {
 } from "../tools.js";
 import { sendOrDraftEmail, type EmailSendArgs } from "../email-send.js";
 import { makeHeaderGetter } from "../gmail-headers.js";
-import { addPairedAddress, readPairedList, removePairedAddress } from "../recipient-pairing.js";
+import {
+  addPairedAddress,
+  isPairingEnabled,
+  normalisePairedAddress,
+  pairCommandHint,
+  readPairedList,
+  removePairedAddress,
+} from "../recipient-pairing.js";
 import {
   addFwdPrefix,
   addRePrefix,
@@ -36,6 +43,24 @@ import {
   parseEmailAddresses,
 } from "../reply-all-helpers.js";
 import { extractEmailContent } from "../mime-walkers.js";
+
+/** Default wait for the pairing confirmation form: 10 minutes. */
+export const PAIRING_CONFIRM_TIMEOUT_MS_DEFAULT = 10 * 60_000;
+
+/**
+ * How long `pair_recipient add` waits for the human to answer the
+ * confirmation form. The SDK's default request timeout is 60 s, too
+ * short for someone who is away from the screen; the default here is
+ * 10 minutes, overridable with `GMAIL_MCP_PAIRING_CONFIRM_TIMEOUT_MS`
+ * (a positive integer, in milliseconds; anything else falls back to
+ * the default). The MCP client also applies its own timeout to the
+ * tool call, which may end the wait sooner.
+ */
+function pairingConfirmTimeoutMs(): number {
+  const raw = process.env["GMAIL_MCP_PAIRING_CONFIRM_TIMEOUT_MS"];
+  const parsed = raw === undefined ? Number.NaN : Number(raw);
+  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : PAIRING_CONFIRM_TIMEOUT_MS_DEFAULT;
+}
 
 export function registerMessagingTools(
   server: McpServer,
@@ -68,15 +93,70 @@ export function registerMessagingTools(
     authorizedScopes,
   );
 
-  // pair_recipient — PR #7. The handler is sync (every dependency in
-  // src/recipient-pairing.ts returns synchronously); wrap the return
-  // in Promise.resolve so the defineTool signature
-  // (args) => Promise<ToolResult> is satisfied without an empty
-  // `async` keyword that ESLint would flag as no-await.
+  // pair_recipient — PR #7.
+  //
+  // With the pairing gate ON, `add` is the one call that widens what
+  // the agent may send to, so the model cannot complete it alone: a
+  // prompt-injected email could otherwise say "pair x@evil, then mail
+  // it the statement". The human confirms through MCP elicitation when
+  // the client supports it; otherwise the call is refused and points
+  // to the CLI (`npx @klodr/gmail-mcp pair add …`). `list` and `remove`
+  // only read or narrow the allowlist and stay available. With the gate
+  // OFF, the allowlist has no effect and `add` is unchanged.
   const pairRecipient = pull("pair_recipient");
-  function handlePairRecipient(
+
+  /**
+   * Ask the human, through the MCP client, to confirm pairing
+   * `address`. Resolves to `null` when confirmed, or to the reason the
+   * address was NOT paired (no elicitation support, declined,
+   * cancelled, or the client failed to answer). Only an explicit
+   * `confirm: true` counts as a yes.
+   */
+  async function confirmPairing(address: string): Promise<string | null> {
+    const cli = pairCommandHint(address);
+    // `elicitInput({ mode: "form" })` needs the `form` sub-capability:
+    // a client that only declares URL elicitation cannot show the box.
+    if (!server.server.getClientCapabilities()?.elicitation?.form) {
+      return (
+        `Recipient pairing is enabled, so "${address}" cannot be paired on the model's request alone, ` +
+        `and this MCP client cannot ask you to confirm (no elicitation support for forms). Pair it yourself from a terminal: ${cli}`
+      );
+    }
+    try {
+      const answer = await server.server.elicitInput(
+        {
+          mode: "form",
+          message:
+            `gmail-mcp: the assistant asks to add "${address}" to the paired recipients. ` +
+            "Once paired, it can send, reply and forward to this address without asking again.",
+          requestedSchema: {
+            type: "object",
+            properties: {
+              confirm: {
+                type: "boolean",
+                title: `Pair ${address}`,
+                description: "Tick to allow emails to this address.",
+                default: false,
+              },
+            },
+            required: ["confirm"],
+          },
+        },
+        { timeout: pairingConfirmTimeoutMs() },
+      );
+      if (answer.action === "accept" && answer.content?.["confirm"] === true) return null;
+      return answer.action === "accept"
+        ? `"${address}" was not paired: the confirmation was left unticked.`
+        : `"${address}" was not paired: the request was ${answer.action === "decline" ? "declined" : "cancelled"}.`;
+    } catch (error: unknown) {
+      const msg = error instanceof Error ? error.message : String(error);
+      return `"${address}" was not paired: the confirmation request failed (${msg}). Pair it from a terminal instead: ${cli}`;
+    }
+  }
+
+  async function handlePairRecipient(
     args: import("zod").infer<typeof PairRecipientSchema>,
-  ): import("./_shared.js").ToolResult {
+  ): Promise<import("./_shared.js").ToolResult> {
     const { action, email } = args;
     if (action === "list") {
       const addresses = readPairedList();
@@ -104,6 +184,12 @@ export function registerMessagingTools(
       };
     }
     if (action === "add") {
+      if (isPairingEnabled()) {
+        const refusal = await confirmPairing(normalisePairedAddress(email));
+        if (refusal !== null) {
+          return { content: [{ type: "text", text: refusal }], isError: true };
+        }
+      }
       const res = addPairedAddress(email);
       return {
         content: [
@@ -136,7 +222,7 @@ export function registerMessagingTools(
     "pair_recipient",
     pairRecipient.description,
     PairRecipientSchema.shape,
-    (args) => Promise.resolve(handlePairRecipient(args)),
+    (args) => handlePairRecipient(args),
     pairRecipient.annotations,
     pairRecipient.scopes,
     authorizedScopes,
